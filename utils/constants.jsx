@@ -1289,6 +1289,7 @@ export const Constants = {
     MENTION_MORE_CHANNELS: 'mention.morechannels',
     MENTION_UNREAD_CHANNELS: 'mention.unread.channels',
     MENTION_MEMBERS: 'mention.members',
+    MENTION_MORE_MEMBERS: 'mention.members',
     MENTION_NONMEMBERS: 'mention.nonmembers',
     MENTION_SPECIAL: 'mention.special',
     DEFAULT_NOTIFICATION_DURATION: 5000,

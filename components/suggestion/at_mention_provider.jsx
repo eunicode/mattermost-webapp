@@ -12,6 +12,7 @@ import AppDispatcher from 'dispatcher/app_dispatcher.jsx';
 import {ActionTypes, Constants} from 'utils/constants.jsx';
 import * as Utils from 'utils/utils.jsx';
 import store from 'stores/redux_store.jsx';
+import SuggestionStore from 'stores/suggestion_store.jsx';
 
 import Provider from './provider.jsx';
 import Suggestion from './suggestion.jsx';
@@ -122,9 +123,49 @@ export default class AtMentionProvider extends Provider {
             return false;
         }
 
+        const me = UserStore.getCurrentUser();
         const prefix = captured[1];
 
         this.startNewRequest(suggestionId, prefix);
+
+        SuggestionStore.clearSuggestions(suggestionId);
+
+        const wrappedUsers = UserStore.getProfileListInChannel()
+            .filter((item) => item.id !== me.id)
+            .filter((item) =>
+                item.username.startsWith(captured[1]) ||
+                item.first_name.startsWith(captured[1]) ||
+                item.last_name.startsWith(captured[1]) ||
+                item.nickname.startsWith(captured[1])
+            )
+            .map((item) => ({
+                    type: Constants.MENTION_MEMBERS,
+                    ...item,
+            }))
+            .sort((a, b) => {
+                // TODO: ???
+                return a.username < b.username
+            }).concat(['here', 'channel', 'all'].filter((item) =>
+                item.startsWith(prefix)
+            ).map((name) => ({
+                username: name,
+                type: Constants.MENTION_SPECIAL,
+            })));
+
+        const wrappedUserIds = {};
+        wrappedUsers.forEach((item) => {
+            wrappedUserIds[item.id] = true;
+        });
+
+        const userMentions = wrappedUsers.map((item) => '@' + item.username);
+        if (userMentions.length > 0) {
+            SuggestionStore.addSuggestions(suggestionId, userMentions, wrappedUsers, AtMentionSuggestion, captured[1]);
+        }
+
+        SuggestionStore.addSuggestions(suggestionId, [''], [{
+            type: Constants.MENTION_MORE_MEMBERS,
+            loading: true,
+        }], AtMentionSuggestion, captured[1]);
 
         autocompleteUsersInChannel(
             prefix,
@@ -136,7 +177,7 @@ export default class AtMentionProvider extends Provider {
 
                 const members = Object.assign([], data.users);
                 for (const id of Object.keys(members)) {
-                    members[id] = {...members[id], type: Constants.MENTION_MEMBERS};
+                    members[id] = {...members[id], type: Constants.MENTION_MORE_MEMBERS};
                 }
 
                 const nonmembers = data.out_of_channel || [];
@@ -144,20 +185,13 @@ export default class AtMentionProvider extends Provider {
                     nonmembers[id] = {...nonmembers[id], type: Constants.MENTION_NONMEMBERS};
                 }
 
-                let specialMentions = [];
-                if (!pretext.startsWith('/msg')) {
-                    specialMentions = ['here', 'channel', 'all'].filter((item) => {
-                        return item.startsWith(prefix);
-                    }).map((name) => {
-                        return {username: name, type: Constants.MENTION_SPECIAL};
-                    });
-                }
-
-                let users = members.concat(specialMentions).concat(nonmembers);
                 const currentUserId = getCurrentUserId(store.getState());
-                users = users.filter((user) => {
-                    return user.id !== currentUserId;
-                });
+                const users = members
+                    .concat(nonmembers)
+                    .filter((user) => user.id !== currentUserId)
+                    .filter((user) =>
+                        !wrappedUserIds[user.id]
+                    );
 
                 const mentions = users.map((user) => '@' + user.username);
 
