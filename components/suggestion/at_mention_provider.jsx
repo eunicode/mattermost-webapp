@@ -5,7 +5,7 @@ import React from 'react';
 import {FormattedMessage} from 'react-intl';
 import XRegExp from 'xregexp';
 
-import {getCurrentUserId} from 'mattermost-redux/selectors/entities/users';
+import {getCurrentUserId, getProfilesInCurrentChannel} from 'mattermost-redux/selectors/entities/users';
 
 import {autocompleteUsersInChannel} from 'actions/user_actions.jsx';
 import AppDispatcher from 'dispatcher/app_dispatcher.jsx';
@@ -123,49 +123,76 @@ export default class AtMentionProvider extends Provider {
             return false;
         }
 
-        const me = UserStore.getCurrentUser();
+        const state = store.getState();
+        const currentUserId = getCurrentUserId(state);
         const prefix = captured[1];
 
         this.startNewRequest(suggestionId, prefix);
 
         SuggestionStore.clearSuggestions(suggestionId);
 
-        const wrappedUsers = UserStore.getProfileListInChannel()
-            .filter((item) => item.id !== me.id)
-            .filter((item) =>
-                item.username.startsWith(captured[1]) ||
-                item.first_name.startsWith(captured[1]) ||
-                item.last_name.startsWith(captured[1]) ||
-                item.nickname.startsWith(captured[1])
-            )
-            .map((item) => ({
-                    type: Constants.MENTION_MEMBERS,
-                    ...item,
-            }))
-            .sort((a, b) => {
-                // TODO: ???
-                return a.username < b.username
-            }).concat(['here', 'channel', 'all'].filter((item) =>
-                item.startsWith(prefix)
-            ).map((name) => ({
-                username: name,
-                type: Constants.MENTION_SPECIAL,
-            })));
+        const specialMentions = ['here', 'channel', 'all'].filter((item) =>
+            item.startsWith(prefix)
+        ).map((name) => ({
+            username: name,
+            type: Constants.MENTION_SPECIAL,
+        }));
 
-        const wrappedUserIds = {};
-        wrappedUsers.forEach((item) => {
-            wrappedUserIds[item.id] = true;
+        const prefixLower = prefix.toLowerCase();
+        const localMembers = getProfilesInCurrentChannel(state).
+            filter((item) => item.id !== currentUserId).
+            filter((item) =>
+                (item.username && item.username.toLowerCase().startsWith(prefixLower)) ||
+                (item.first_name && item.first_name.toLowerCase().startsWith(prefixLower)) ||
+                (item.last_name && item.last_name.toLowerCase().startsWith(prefixLower)) ||
+                (item.nickname && item.nickname.toLowerCase().startsWith(prefixLower))
+            ).
+            map((item) => ({
+                type: Constants.MENTION_MEMBERS,
+                ...item,
+            })).
+            sort((a, b) => {
+                // TODO: right algorithm?
+                if (a.username < b.username) {
+                    return -1;
+                } else if (a.username > b.username) {
+                    return 1;
+                }
+                return 0;
+            }).
+            splice(0, 25);
+
+        const localUserIds = {};
+        localMembers.forEach((item) => {
+            localUserIds[item.id] = true;
         });
 
-        const userMentions = wrappedUsers.map((item) => '@' + item.username);
-        if (userMentions.length > 0) {
-            SuggestionStore.addSuggestions(suggestionId, userMentions, wrappedUsers, AtMentionSuggestion, captured[1]);
-        }
-
-        SuggestionStore.addSuggestions(suggestionId, [''], [{
+        const loadingUsers = [{
             type: Constants.MENTION_MORE_MEMBERS,
             loading: true,
-        }], AtMentionSuggestion, captured[1]);
+        }];
+        const loadingMentions = [''];
+
+        const members = specialMentions.concat(localMembers).concat(loadingUsers);
+        const userMentions = specialMentions.concat(localMembers).map((item) => '@' + item.username).concat(loadingMentions);
+
+        // if (userMentions.length > 0) {
+        //     SuggestionStore.addSuggestions(suggestionId, userMentions, members, AtMentionSuggestion, prefix);
+        // }
+
+        // SuggestionStore.addSuggestions(suggestionId, [''], [{
+        //     type: Constants.MENTION_MORE_MEMBERS,
+        //     loading: true,
+        // }], AtMentionSuggestion, prefix);
+
+        setTimeout(() => AppDispatcher.handleServerAction({
+            type: ActionTypes.SUGGESTION_RECEIVED_SUGGESTIONS,
+            id: suggestionId,
+            matchedPretext: `@${captured[1]}`,
+            terms: userMentions,
+            items: members,
+            component: AtMentionSuggestion,
+        }), 0);
 
         autocompleteUsersInChannel(
             prefix,
@@ -174,25 +201,37 @@ export default class AtMentionProvider extends Provider {
                 if (this.shouldCancelDispatch(prefix)) {
                     return;
                 }
-
-                const members = Object.assign([], data.users);
-                for (const id of Object.keys(members)) {
-                    members[id] = {...members[id], type: Constants.MENTION_MORE_MEMBERS};
+                if (!data) {
+                    return;
                 }
 
-                const nonmembers = data.out_of_channel || [];
-                for (const id of Object.keys(nonmembers)) {
-                    nonmembers[id] = {...nonmembers[id], type: Constants.MENTION_NONMEMBERS};
-                }
+                const remoteMembers = (data.users || []).map((user) => ({
+                    type: Constants.MENTION_MEMBERS,
+                    ...user,
+                })).filter((user) =>
+                    !localUserIds[user.id]
+                ).filter((user) =>
+                    user.id !== currentUserId
+                );
 
-                const currentUserId = getCurrentUserId(store.getState());
-                const users = members
-                    .concat(nonmembers)
-                    .filter((user) => user.id !== currentUserId)
-                    .filter((user) =>
-                        !wrappedUserIds[user.id]
-                    );
+                const members = localMembers.concat(remoteMembers).sort((a, b) => {
+                    // TODO: right algorithm?
+                    if (a.username < b.username) {
+                        return -1;
+                    } else if (a.username > b.username) {
+                        return 1;
+                    }
+                    return 0;
+                });
 
+                const remoteNonMembers = (data.out_of_channel || []).map((user) => ({
+                    type: Constants.MENTION_NONMEMBERS,
+                    ...user,
+                }));
+
+                const users = specialMentions.
+                    concat(members).
+                    concat(remoteNonMembers);
                 const mentions = users.map((user) => '@' + user.username);
 
                 AppDispatcher.handleServerAction({
